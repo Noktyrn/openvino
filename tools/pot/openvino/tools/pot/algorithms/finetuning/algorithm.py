@@ -150,27 +150,73 @@ class LayerwiseModelFinetuning(Algorithm):
                                                            batch_indices_sample,
                                                            fp_model_callbacks)
 
-            for batch_idx in range(n_batches):
-                if batch_idx != 0 and self._tconf['update_every_batch']:
+            ops_list = [op for op in modified_model.pseudo_topological_sort() 
+                        if op.kind == 'op' and op.name in self._nodes_to_tune]
+
+            print("Total number of layers to tune: ", len(ops_list))
+            tuning_groups = []
+            tuned_nodes = set()
+
+            for o in ops_list:
+                if not o.fullname in tuned_nodes:
+                    group = {o.fullname:o}
+                    tuned_nodes.add(o.fullname)
+                    if o.type == 'FakeQuantize':
+                        for n in ops_list:
+                            if n.fullname in o.source_names and not n.fullname in tuned_nodes:
+                                group[n.fullname] = n
+                                tuned_nodes.add(n.fullname)
+                    tuning_groups.append(group)
+            
+            print("Total number of groups to tune: ", len(tuning_groups))
+            #print([g.keys() for g in tuning_groups])
+
+            for group in tuning_groups:
+                new_modified_model_callbacks = {}
+                new_fp_model_callbacks = {}
+                for _, modified_node in group.items():
+                    input_node = self._get_input_node(modified_node)
+                    output_node = input_node
+                    output_node = input_node
+                    if modified_node.type in self._weighted_operations:
+                        bias_node = nu.get_bias_for_node(modified_node)
+                        output_node = modified_node
+                        if bias_node is not None:
+                            output_node = nu.get_node_output(bias_node, 0)[0]
+                    
+                    input_node_name = self._get_input_node_name(modified_node)
+
+                    new_fp_model_callbacks[output_node.fullname] = fp_model_callbacks[output_node.fullname]
+
+                    new_modified_model_callbacks[input_node_name] = modified_model_callbacks[input_node_name]
+                
+                    print("Started to tune operation: ", modified_node.fullname)
+                    print("Input node name: ", input_node_name)
+                    print("Output node name: ", output_node.fullname)
+                
+                if self._tconf['update_every_batch']:
                     logger.debug('Batch update')
                     batch_indices_sample = self._random_samples()
                     fp_activations = self._update_batch_from_model(self._original_model,
                                                                    batch_indices_sample,
-                                                                   fp_model_callbacks)
+                                                                   new_fp_model_callbacks)
 
                 modified_activations = fp_activations
                 if modified_model_callbacks:
                     modified_activations = self._update_batch_from_model(modified_model,
                                                                          batch_indices_sample,
-                                                                         modified_model_callbacks)
+                                                                         new_modified_model_callbacks)
 
                 self._fine_tuning_step(
                     optimizers,
                     criterion,
-                    batch_idx,
+                    group,
                     fp_activations,
                     modified_activations,
-                    n_batches
+                    n_batches,
+                    new_fp_model_callbacks,
+                    new_modified_model_callbacks,
+                    modified_model
                 )
             return 0
 
@@ -193,75 +239,99 @@ class LayerwiseModelFinetuning(Algorithm):
             self,
             optimizers,
             criterion,
-            batch_idx,
+            group,
             fp_activations,
             modified_activations,
-            n_batches
+            n_batches,
+            fp_model_callbacks,
+            modified_model_callbacks,
+            modified_model
     ):
-        accumulated_losses = {op_name: 0.0 for op_name in self._layer_ops_wrapped}
+        accumulated_losses = {o: 0.0 for o in group.keys()}
         losses = {}
-        for op_name in self._layer_ops_wrapped:
-            torch_wrapped_op = self._layer_ops_wrapped[op_name]
-            input_name = self._nodes_to_tune_input[op_name]
-            output_name = self._nodes_to_tune_output[op_name]
+        for batch_idx in range(n_batches):
+            for op_name in group.keys():
+                if batch_idx != 0 and self._tconf['update_every_batch']:
+                    logger.debug('Batch update')
+                    batch_indices_sample = self._random_samples()
+                    fp_activations = self._update_batch_from_model(self._original_model,
+                                                                    batch_indices_sample,
+                                                                    fp_model_callbacks)
+                    modified_activations = fp_activations
+                    if modified_model_callbacks:
+                        modified_activations = self._update_batch_from_model(modified_model,
+                                                                            batch_indices_sample,
+                                                                            modified_model_callbacks)
+                
+                torch_wrapped_op = self._layer_ops_wrapped[op_name]
+                input_name = self._nodes_to_tune_input[op_name]
+                output_name = self._nodes_to_tune_output[op_name]
 
-            in_blobs = modified_activations[input_name]['output']
-            if self._tconf['use_only_fp_inputs']:
-                in_blobs = fp_activations[input_name]['output']
-            fp_out_blobs = fp_activations[output_name]['output']
+                """
+                print("Batch: ", batch_idx)
+                print("Modified activations: ", modified_activations.keys())
+                print("FP activations: ", fp_activations.keys())
+                print("Node: ", op_name)
+                print("Input: ", input_name)
+                print("Output: ", output_name)
+                """
 
-            if not self._is_variable_resolution_model:
-                modified_out_blobs = torch_wrapped_op(in_blobs)
-                losses[op_name] = criterion(modified_out_blobs, fp_out_blobs)
-            else:
-                for blob_idx, modified_in_blob in enumerate(in_blobs):
-                    modified_out_blob = torch_wrapped_op(torch.unsqueeze(modified_in_blob, 0))
-                    losses[op_name] += criterion(
-                        modified_out_blob, torch.unsqueeze(fp_out_blobs[blob_idx], 0)
-                    )
+                in_blobs = modified_activations[input_name]['output']
+                if self._tconf['use_only_fp_inputs']:
+                    in_blobs = fp_activations[input_name]['output']
+                fp_out_blobs = fp_activations[output_name]['output']
 
-        for name, loss in losses.items():
-            accumulated_losses[name] = loss.data
+                if not self._is_variable_resolution_model:
+                    modified_out_blobs = torch_wrapped_op(in_blobs)
+                    losses[op_name] = criterion(modified_out_blobs, fp_out_blobs)
+                else:
+                    for blob_idx, modified_in_blob in enumerate(in_blobs):
+                        modified_out_blob = torch_wrapped_op(torch.unsqueeze(modified_in_blob, 0))
+                        losses[op_name] += criterion(
+                            modified_out_blob, torch.unsqueeze(fp_out_blobs[blob_idx], 0)
+                        )
 
-        if batch_idx == 0 and self._iteration == 0:
-            self._initial_losses = deepcopy(accumulated_losses)
-            self._initial_losses = {
-                name: val + self._safety_eps
-                for name, val in self._initial_losses.items()
-            }
+            for name, loss in losses.items():
+                accumulated_losses[name] = loss.data
 
-        weighted_loss = 0
-        for op_name in self._layer_ops_wrapped:
+            if batch_idx == 0 and self._iteration == 0:
+                self._initial_losses = deepcopy(accumulated_losses)
+                self._initial_losses = {
+                    name: val + self._safety_eps
+                    for name, val in self._initial_losses.items()
+                }
+
+            weighted_loss = 0
             init_loss = self._initial_losses[op_name]
             accumulated_loss = accumulated_losses[op_name]
             weighted_loss += accumulated_loss / init_loss / len(self._initial_losses)
 
-        if batch_idx % self._tconf['loss_logging_freq'] == 0:
-            printable_loss = weighted_loss.to('cpu').numpy()
-            logger.info(
-                'Batch #%s/%s, weighted_loss: %s',
-                batch_idx + 1,
-                n_batches,
-                printable_loss,
-            )
+            if batch_idx % self._tconf['loss_logging_freq'] == 0:
+                printable_loss = weighted_loss.to('cpu').numpy()
+                logger.info(
+                    'Batch #%s/%s, weighted_loss: %s',
+                    batch_idx + 1,
+                    n_batches,
+                    printable_loss,
+                )
 
-        if self._tconf['calculate_grads_on_loss_increase_only']:
-            if weighted_loss >= self._current_best_loss:
+            if self._tconf['calculate_grads_on_loss_increase_only']:
+                if weighted_loss >= self._current_best_loss:
+                    self._current_best_loss = weighted_loss
+                    self._calculate_gradients(losses)
+                for _, optimizer in optimizers.items():
+                    optimizer.step()
+                    if self._current_best_loss == weighted_loss:
+                        optimizer.zero_grad()
                 self._current_best_loss = weighted_loss
+            else:
                 self._calculate_gradients(losses)
-            for op_name, optimizer in optimizers.items():
-                optimizer.step()
-                if self._current_best_loss == weighted_loss:
+                for _, optimizer in optimizers.items():
+                    optimizer.step()
                     optimizer.zero_grad()
-            self._current_best_loss = weighted_loss
-        else:
-            self._calculate_gradients(losses)
-            for op_name, optimizer in optimizers.items():
-                optimizer.step()
-                optimizer.zero_grad()
-        if self._tconf['update_every_batch']:
-            for layer in self._layer_ops_wrapped.values():
-                layer.update_node_params()
+            if self._tconf['update_every_batch']:
+                for layer in self._layer_ops_wrapped.values():
+                    layer.update_node_params()
 
     def _activation_maps_to_torch(self, activations):
         for layer_name in activations:

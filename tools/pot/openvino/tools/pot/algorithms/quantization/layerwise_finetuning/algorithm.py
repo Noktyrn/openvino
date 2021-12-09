@@ -30,7 +30,7 @@ class QuantizeModelFinetuning(LayerwiseModelFinetuning):
             'scale_lr': 1e-6,
             'min_lr': 1e-6,
             'num_samples_for_tuning': 5000,
-            'batch_size': 25,
+            'batch_size': 100,
             'calibration_indices_pool': 300,
             'calculate_grads_on_loss_increase_only': False,
             'set_quantized_values_to_weight_parameter': True,
@@ -158,7 +158,7 @@ class QuantizeModelFinetuning(LayerwiseModelFinetuning):
 
     def _calculate_gradients(self, losses):
         for loss in losses.values():
-            loss.backward()
+            loss.backward(retain_graph=True)
 
     @staticmethod
     def _get_input_node(node):
@@ -173,3 +173,5 @@ class QuantizeModelFinetuning(LayerwiseModelFinetuning):
         if input_node.type == 'FakeQuantize':
             return nu.get_quantized_input_key(input_node)
         return nu.get_quantized_input_key(node)
+
+    
