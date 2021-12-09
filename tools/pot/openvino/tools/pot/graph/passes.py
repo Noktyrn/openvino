@@ -406,6 +406,7 @@ class FakeQuantizeOptimization(BackReplacementPattern):
                 fq_consumers = sorted(fq_consumers, key=lambda x: x.name)
                 # Keep only first FakeQuantize and disconnect other
                 for fq in fq_consumers[1:]:
+                    fq_consumers[0].source_names.union(fq.source_names)
                     logger.debug('Removed useless FakeQuantize {}'.format(fq.name))
                     fq.in_port(0).disconnect()
                     fq.out_port(0).get_connection().set_source(fq_consumers[0].out_port(0))
@@ -715,7 +716,7 @@ def create_bias_node(graph: Graph, src_node):
 
 def create_fake_quantize_node(graph: Graph, name):
     fq = FakeQuantize(graph, {'name': name, 'levels': 0,
-                              'stop_value_propagation': True}).create_node()
+                              'stop_value_propagation': True, 'source_names': set()}).create_node()
 
     input_low = Const(graph, {'value': np.array(0.0).astype(np.float32)}).create_node()
     input_height = Const(graph, {'value': np.array(0.0).astype(np.float32)}).create_node()
@@ -777,6 +778,7 @@ def insert_fake_quantize(graph, node, ports=None, names=None):
             port.get_connection().set_destination(fq_input.in_port(0))
             fq_input.out_port(0).connect(port)
 
+        fq_input.source_names.add(node.name)
         fq_input.infer(fq_input)
 
         new_fq.append(fq_input)
