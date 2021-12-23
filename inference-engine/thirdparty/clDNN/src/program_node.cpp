@@ -101,13 +101,16 @@ std::unique_ptr<json_composite> program_node::desc_to_json() const {
     node_info->add("in data flow", bool_to_str(data_flow));
     node_info->add("output", bool_to_str(output));
 
-
     json_composite fused_nodes_info;
     size_t index = 0;
     for (auto& fused_desc : get_fused_primitives()) {
         json_composite fused_node_info;
         fused_node_info.add("id", fused_desc.node->id());
-        fused_node_info.add("dependencies", fused_desc.deps);
+        std::vector<primitive_id> dep_ids;
+        for (auto dep : fused_desc.deps) {
+            dep_ids.push_back(dep.first);
+        }
+        fused_node_info.add("dependencies", dep_ids);
         fused_node_info.add("dep start_idx", fused_desc.dep_start_idx);
         json_composite info;
         info.add("data type", dt_to_str(fused_desc.output_layout.data_type));
@@ -117,6 +120,22 @@ std::unique_ptr<json_composite> program_node::desc_to_json() const {
         fused_nodes_info.add("fused primitive idx " + std::to_string(index++), fused_node_info);
     }
     node_info->add("fused primitives", fused_nodes_info);
+
+#ifdef ENABLE_ONEDNN_FOR_GPU
+    auto& onednn_post_ops = get_fused_primitives_onednn();
+    if (onednn_post_ops.size()) {
+        size_t post_op_index = 0;
+        json_composite post_ops_info;
+        for (auto& fused_prim_desc : onednn_post_ops) {
+            json_composite post_op_info;
+            post_op_info.add("post op", onednn_post_op_type_to_str(fused_prim_desc.op_type));
+            post_op_info.add("memory dependency", fused_prim_desc.mem_dep);
+            post_op_info.add("memory offset", fused_prim_desc.mem_offset);
+            post_ops_info.add("post ops idx " + std::to_string(post_op_index++), post_op_info);
+        }
+        node_info->add("onednn post ops", post_ops_info);
+    }
+#endif
 
     std::vector<std::string> deps_ptrs;
     {
@@ -335,6 +354,14 @@ dnnl::post_ops program_node::try_optimize_post_ops(dnnl::post_ops& p_ops, const 
                 break;
             }
 
+            case onednn_post_op_type::binary_relu:
+            {
+                int mask;
+                cur_p_ops.get_params_prelu(idx, mask);
+                new_p_ops.append_prelu(mask);
+                break;
+            }
+
             case onednn_post_op_type::scale:
             {
                 break;
@@ -416,7 +443,8 @@ dnnl::post_ops program_node::try_optimize_post_ops(dnnl::post_ops& p_ops, const 
         // Ignore optimized operations for "previous" operation in our operation pair
         while (type_is_any_optimized(prev_type) && cur_post_op_idx < post_ops_size - 1) {
             prev_post_op_idx++;
-            cur_post_op_idx++;
+            if (prev_post_op_idx == cur_post_op_idx)
+                cur_post_op_idx++;
             prev_type = cur_post_ops[prev_post_op_idx].op_type;
             cur_type = cur_post_ops[cur_post_op_idx].op_type;
         }
@@ -709,6 +737,7 @@ void program_node::init_onednn_primitive_attributes() {
                                   type == onednn_post_op_type::binary_mul ||
                                   type == onednn_post_op_type::binary_max ||
                                   type == onednn_post_op_type::binary_min ||
+                                  type == onednn_post_op_type::binary_relu ||
                                   type == onednn_post_op_type::scale ||
                                   type == onednn_post_op_type::sum;
         if (has_memory_buffers)
@@ -719,10 +748,18 @@ void program_node::init_onednn_primitive_attributes() {
         auto node = cldnn_post_ops[idx].node;
 
         if (node->is_type<activation>()) {
-            auto fused_desc = node->as<activation>().get_primitive();
-            dnnl::algorithm alg = onednn::convert_activation_func(fused_desc->activation_function);
-            post_ops.append_eltwise(1.0f, alg, fused_desc->additional_params.a, fused_desc->additional_params.b);
-            update_onednn_post_op_list(onednn_post_op_type::eltwise_act, empty_mem);
+            auto& a_node = node->as<activation>();
+            if (!a_node.get_primitive()->additional_params_input.empty()) {
+                auto dep_idx = cldnn_post_ops[idx].dep_start_idx;
+                int oc_dim = node->get_output_layout().size.feature.size();
+                post_ops.append_prelu(1 << oc_dim);
+                update_onednn_post_op_list(onednn_post_op_type::binary_relu, dep_idx);
+            } else {
+                auto fused_desc = node->as<activation>().get_primitive();
+                dnnl::algorithm alg = onednn::convert_activation_func(fused_desc->activation_function);
+                post_ops.append_eltwise(1.0f, alg, fused_desc->additional_params.a, fused_desc->additional_params.b);
+                update_onednn_post_op_list(onednn_post_op_type::eltwise_act, empty_mem);
+            }
         } else if (node->is_type<eltwise>()) {
             auto& e_node = node->as<eltwise>();
             auto dep_idx = cldnn_post_ops[idx].dep_start_idx;
