@@ -119,7 +119,6 @@ class MinMaxQuantization(Algorithm):
         batch_inputs_stats = dict()
         batch_weights_stats = dict()
         fake_quantizations = mu.get_nodes_by_type(model, ['FakeQuantize'])
-
         for fq in fake_quantizations:
             fq_input = fqut.get_fake_quantize_input(fq)
             fq_input_value = fqut.get_fake_quantize_input_value(fq)

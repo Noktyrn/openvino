@@ -267,15 +267,6 @@ class LayerwiseModelFinetuning(Algorithm):
                 input_name = self._nodes_to_tune_input[op_name]
                 output_name = self._nodes_to_tune_output[op_name]
 
-                """
-                print("Batch: ", batch_idx)
-                print("Modified activations: ", modified_activations.keys())
-                print("FP activations: ", fp_activations.keys())
-                print("Node: ", op_name)
-                print("Input: ", input_name)
-                print("Output: ", output_name)
-                """
-
                 in_blobs = modified_activations[input_name]['output']
                 if self._tconf['use_only_fp_inputs']:
                     in_blobs = fp_activations[input_name]['output']

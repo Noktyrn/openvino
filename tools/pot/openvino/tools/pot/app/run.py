@@ -16,6 +16,7 @@ from openvino.tools.pot.graph.model_utils import compress_model_weights
 from openvino.tools.pot.pipeline.initializer import create_pipeline
 from openvino.tools.pot.utils.logger import init_logger, get_logger
 from openvino.tools.pot.utils.telemetry import start_session_telemetry, end_session_telemetry
+from ..graph import model_utils as mu, node_utils as nu
 
 logger = get_logger(__name__)
 
@@ -115,6 +116,8 @@ def optimize(config):
     if not config.model.keep_uncompressed_weights:
         compress_model_weights(compressed_model)
 
+    nodes_to_tune = _collect_nodes_to_tune(compressed_model)
+
     save_model(compressed_model,
                os.path.join(config.model.exec_log_dir, 'optimized'),
                model_name=config.model.model_name)
@@ -124,3 +127,18 @@ def optimize(config):
         return pipeline.evaluate(compressed_model)
 
     return None
+
+def _collect_nodes_to_tune(modified_model):
+    nodes_to_tune = {}
+
+    ops_list = [op for op in modified_model.pseudo_topological_sort() if op.kind == 'op']
+    for op in ops_list:
+        if op.type == 'FakeQuantize' and nu.get_node_input(op, 0).type != 'Const':
+            nodes_to_tune[op.name] = {
+                'type': op.type,
+                'min_val': nu.get_node_value(nu.get_node_input(op, 1)),
+                'max_val': nu.get_node_value(nu.get_node_input(op, 2))
+            }
+
+    logger.debug('List of layers to be fine-tuned: %s', str(nodes_to_tune.keys()))
+    return nodes_to_tune    

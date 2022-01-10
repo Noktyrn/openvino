@@ -109,7 +109,6 @@ class BiasCorrection(Algorithm):
         return model
 
     def _fill_subgraphs_data(self, model):
-
         def skip_node(node):
             if not nu.node_with_quantized_weights(node) and not self._apply_for_all_nodes:
                 logger.debug('%s skipped because it does not have FQ weights.', node.fullname)

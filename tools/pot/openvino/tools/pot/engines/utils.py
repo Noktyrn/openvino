@@ -3,27 +3,35 @@
 
 from collections import defaultdict
 import numpy as np
-
+import os
 from ..statistics.statistics import compute_statistic, Statistic, TensorStatistic
 from ..statistics.function_selector import get_stats_function, ACTIVATIONS
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
-
+BEGIN = 8
+END = 16
 
 def append_stats(accumulated_layer_stats, stats_layout, value, dataset_index):
     inplace_stats_mapping = get_inplace_stats_mapping(stats_layout)
     if isinstance(value, list):
         value = parse_sequential_stats(value, stats_layout)
 
-    for layer, stats in stats_layout.items():
-        if layer not in accumulated_layer_stats:
-            accumulated_layer_stats[layer] = {stat_name: [] for stat_name in stats_layout[layer]}
-        for stat_name, stat_fn in stats.items():
-            layer_stat_name = inplace_stats_mapping[layer][stat_name]
-            if layer_stat_name in value:
-                accumulated_layer_stats[layer][stat_name].append(
-                    (dataset_index, compute_statistic(stat_fn, value, layer_stat_name)))
+    with open('/home/tagir/openvino/results/append_stat.txt', 'a') as f:
+        f.write('\n\nEntered append stats\n\n')
+        for layer, stats in stats_layout.items():
+            if layer not in accumulated_layer_stats:
+                accumulated_layer_stats[layer] = {stat_name: [] for stat_name in stats_layout[layer]}
+            for stat_name, stat_fn in stats.items():
+                layer_stat_name = inplace_stats_mapping[layer][stat_name]
+                if layer_stat_name in value:
+                    val = compute_statistic(stat_fn, value, layer_stat_name)
+                    for x in val:
+                        if np.isnan(np.sum(x)):
+                            print("Found NaN")
+                            f.write('Layer_stat_name:'+str(layer_stat_name)+'\n')
+                    accumulated_layer_stats[layer][stat_name].append(
+                        (dataset_index, val))
 
 
 def parse_sequential_stats(value_sequential, stats_layout):
@@ -45,11 +53,26 @@ def parse_sequential_stats(value_sequential, stats_layout):
 
 
 def process_accumulated_stats(accumulated_stats, stat_names_aliases=None):
+    with open('/home/tagir/openvino/results/append_stat.txt', 'a') as f:
+        f.write('\n\nEntered process stats before transform\n\n')
+        counter = 0
+        for layer in accumulated_stats:
+            for stat in accumulated_stats[layer]:
+                if counter >= BEGIN and counter < END:
+                    f.write(layer + ':'+str(accumulated_stats[layer][stat])+'\n')
+                counter += 1
     for layer in accumulated_stats:
         for stat in accumulated_stats[layer]:
             accumulated_stats[layer][stat].sort(key=lambda el: el[0])
             accumulated_stats[layer][stat] = [el[1] for el in accumulated_stats[layer][stat]]
-
+    with open('/home/tagir/openvino/results/append_stat.txt', 'a') as f:
+        f.write('\n\nEntered process stats after transform\n\n')
+        counter = 0
+        for layer in accumulated_stats:
+            for stat in accumulated_stats[layer]:
+                if counter >= BEGIN and counter < END:
+                    f.write(layer + ':'+str(accumulated_stats[layer][stat])+'\n')
+                counter += 1
     # pack IE-like stats names into original ones
     if stat_names_aliases is not None:
         accumulated_stats = {stat_names_aliases[key]: value
