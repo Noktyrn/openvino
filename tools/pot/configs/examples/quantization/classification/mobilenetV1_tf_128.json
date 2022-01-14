@@ -1,0 +1,22 @@
+{
+    "model": {
+        "model_name": "mobilenetv1",
+        "model": "/home/tagir/work/openvino/public/mobilenet-v1-0.25-128/FP32/mobilenet-v1-0.25-128.xml",
+        "weights": "/home/tagir/work/openvino/public/mobilenet-v1-0.25-128/FP32/mobilenet-v1-0.25-128.bin"
+    },
+    "engine": {
+        "config": "/home/tagir/work/openvino/open_model_zoo/models/public/mobilenet-v1-0.25-128/accuracy-check.yml"
+    },
+    "compression": {
+        "algorithms": [
+            {
+                "name": "DefaultQuantization",
+                "params": {
+                    "preset": "mixed",
+                    "stat_subset_size": 300,
+                    "use_layerwise_tuning": true
+                }
+            }
+        ]
+    }
+}

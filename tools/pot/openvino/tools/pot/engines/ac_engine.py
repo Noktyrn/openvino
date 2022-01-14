@@ -217,14 +217,12 @@ class ACEngine(Engine):
         return self._model_evaluator.get_network()
 
     def _ac_callback(self, stats_layout, metric_per_sample, value, **kwargs):
-        """
         with open('/home/tagir/openvino/results/append_stat.txt', 'a') as f:
-            f.write('\n\nValue before:\n')
+            f.write('\n\nValue ac_callback begin:\n')
             for x in value:
                 if np.isnan(np.sum(value[x])):
                     f.write('Layer_stat_name:'+str(value[x])+'\n')
                     break
-        """
         if not ('metrics_result' in kwargs and 'dataset_indices' in kwargs):
             raise Exception('Expected "metrics_result", "dataset_indices" be passed to '
                             'output_callback inside accuracy checker')

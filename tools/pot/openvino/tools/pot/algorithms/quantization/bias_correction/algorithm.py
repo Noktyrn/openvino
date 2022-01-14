@@ -21,6 +21,7 @@ from ....statistics.functions import aggregation as agf
 from ....statistics.statistics import TensorStatisticAxis
 from ....utils.launcher import IELauncher
 from ....utils.logger import get_logger
+from openvino.tools.pot.graph import save_model
 
 logger = get_logger(__name__)
 
